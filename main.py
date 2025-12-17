@@ -69,7 +69,6 @@ def extract_data(file):
     if total_mask.any():
         df = df.loc[: total_mask.idxmax() - 1]
 
-    # Clean wells
     df = df[
         df[well].notna() &
         (df[well].astype(str).str.strip() != "")
@@ -86,22 +85,19 @@ def extract_data(file):
     return df.reset_index(drop=True), cols
 
 # =============================================================================
-# AI ANOMALY DETECTION (FIXED)
+# AI ANOMALY DETECTION (VECTOR SAFE)
 # =============================================================================
 
 def detect_anomalies(df, cols):
     df = df.copy()
 
-    # --- Z-score (Net Diff BO) ---
+    # Z-score for Net Diff BO
     std = df[cols["net_diff"]].std()
-    if std == 0 or pd.isna(std):
-        df["z_net_diff"] = 0
-    else:
-        df["z_net_diff"] = (
-            (df[cols["net_diff"]] - df[cols["net_diff"]].mean()) / std
-        )
+    df["z_net_diff"] = 0 if std == 0 or pd.isna(std) else (
+        (df[cols["net_diff"]] - df[cols["net_diff"]].mean()) / std
+    )
 
-    # --- IQR (Net BO) ---
+    # IQR for Net BO
     q1 = df[cols["net_bo"]].quantile(0.25)
     q3 = df[cols["net_bo"]].quantile(0.75)
     iqr = q3 - q1
@@ -109,33 +105,28 @@ def detect_anomalies(df, cols):
     lower_bo = q1 - 1.5 * iqr
     upper_bo = q3 + 1.5 * iqr
 
-    # --- Flags ---
-    df["FLAG_EXTREME_DIFF"] = df["z_net_diff"].abs() > 3
-    df["FLAG_ZERO_BO"] = df[cols["net_bo"]] == 0
-    df["FLAG_IQR_BO"] = (df[cols["net_bo"]] < lower_bo) | (df[cols["net_bo"]] > upper_bo)
-    df["FLAG_HIGH_WC"] = df[cols["wc"]] > 75 if cols["wc"] else False
+    # Flags (ALL BOOLEAN SERIES)
+    flag_extreme_diff = df["z_net_diff"].abs() > 3
+    flag_zero_bo = df[cols["net_bo"]] == 0
+    flag_iqr_bo = (df[cols["net_bo"]] < lower_bo) | (df[cols["net_bo"]] > upper_bo)
+    flag_high_wc = (df[cols["wc"]] > 75) if cols["wc"] else False
 
+    # Combine anomaly
     df["ANOMALY"] = (
-        df["FLAG_EXTREME_DIFF"] |
-        df["FLAG_ZERO_BO"] |
-        df["FLAG_IQR_BO"] |
-        df["FLAG_HIGH_WC"]
+        flag_extreme_diff |
+        flag_zero_bo |
+        flag_iqr_bo |
+        flag_high_wc
     )
 
-    # --- Human-readable reasons (SAFE) ---
-    def build_reason(row):
-        reasons = []
-        if row["FLAG_EXTREME_DIFF"]:
-            reasons.append("Extreme Net Diff BO (Z-score > 3)")
-        if row["FLAG_ZERO_BO"]:
-            reasons.append("Zero Net BO")
-        if row["FLAG_IQR_BO"]:
-            reasons.append("Abnormal Net BO (IQR outlier)")
-        if row["FLAG_HIGH_WC"]:
-            reasons.append("High Water Cut (>75%)")
-        return "; ".join(reasons)
+    # Build REASON safely (VECTOR METHOD)
+    df["REASON"] = ""
 
-    df["REASON"] = df.apply(build_reason, axis=1)
+    df.loc[flag_extreme_diff, "REASON"] += "Extreme Net Diff BO (Z-score > 3); "
+    df.loc[flag_zero_bo, "REASON"] += "Zero Net BO; "
+    df.loc[flag_iqr_bo, "REASON"] += "Abnormal Net BO (IQR outlier); "
+    if cols["wc"]:
+        df.loc[flag_high_wc, "REASON"] += "High Water Cut (>75%); "
 
     return df[df["ANOMALY"]].reset_index(drop=True)
 
@@ -147,7 +138,7 @@ def create_visuals(df, cols):
     fig, axes = plt.subplots(1, 3, figsize=(32, 10))
     fig.set_dpi(300)
 
-    # 1️⃣ Top Net Diff BO
+    # Net Diff BO
     diff_df = (
         df.assign(abs_diff=df[cols["net_diff"]].abs())
         .sort_values("abs_diff", ascending=False)
@@ -164,13 +155,13 @@ def create_visuals(df, cols):
     axes[0].set_title("Top 15 Net Diff BO Wells")
     axes[0].tick_params(axis="x", rotation=45)
 
-    # 2️⃣ Top W/C (exclude zero BO)
+    # W/C
     if cols["wc"]:
         wc_df = df[df[cols["net_bo"]] > 0].nlargest(10, cols["wc"])
         axes[1].barh(wc_df[cols["well"]], wc_df[cols["wc"]])
         axes[1].set_title("Top 10 Wells by W/C")
 
-    # 3️⃣ Top Net BO
+    # Net BO
     bo_df = df.nlargest(10, cols["net_bo"])
     axes[2].barh(bo_df[cols["well"]], bo_df[cols["net_bo"]])
     axes[2].set_title("Top 10 Net BO Wells")
@@ -179,20 +170,18 @@ def create_visuals(df, cols):
     return fig
 
 # =============================================================================
-# POWERPOINT EXPORT
+# POWERPOINT
 # =============================================================================
 
-def create_ppt(df, anomalies, fig, cols):
+def create_ppt(anomalies, fig, cols):
     prs = Presentation()
 
-    # Title
     slide = prs.slides.add_slide(prs.slide_layouts[0])
     slide.shapes.title.text = "Production Analysis Report"
-    slide.placeholders[1].text = "Automated AI-Powered Dashboard"
+    slide.placeholders[1].text = "AI-Powered Anomaly Detection"
 
-    # AI Summary
     slide = prs.slides.add_slide(prs.slide_layouts[1])
-    slide.shapes.title.text = "AI Anomaly Summary"
+    slide.shapes.title.text = "Detected Anomalies"
     tf = slide.placeholders[1].text_frame
     tf.clear()
 
@@ -202,7 +191,6 @@ def create_ppt(df, anomalies, fig, cols):
         for _, r in anomalies.iterrows():
             tf.add_paragraph().text = f"{r[cols['well']]} → {r['REASON']}"
 
-    # Visuals
     img = io.BytesIO()
     fig.savefig(img, format="png", dpi=300)
     img.seek(0)
@@ -221,45 +209,33 @@ def create_ppt(df, anomalies, fig, cols):
 
 st.title("🛢️ Oil & Gas Analytics Dashboard")
 
-uploaded_file = st.file_uploader(
-    "Upload Production Excel File",
-    type=["xlsx", "xlsm"]
-)
+file = st.file_uploader("Upload Production Excel File", type=["xlsx", "xlsm"])
 
-if uploaded_file:
-    with st.spinner("Processing Excel file..."):
-        df, cols = extract_data(uploaded_file)
+if file:
+    df, cols = extract_data(file)
 
     if df is None:
-        st.error("❌ Required columns not found in Excel file.")
+        st.error("❌ Required columns not found.")
         st.stop()
 
     anomalies = detect_anomalies(df, cols)
     fig = create_visuals(df, cols)
 
-    # KPIs
-    st.subheader("📊 Key Performance Indicators")
+    st.subheader("📊 KPIs")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Wells", len(df))
     c2.metric("Anomalies", len(anomalies))
     c3.metric("Zero Net BO", int((df[cols["net_bo"]] == 0).sum()))
     c4.metric("High W/C", int((df[cols["wc"]] > 75).sum()) if cols["wc"] else 0)
 
-    # Anomalies table
     st.subheader("🚨 AI-Detected Anomalies")
-    st.dataframe(
-        anomalies[[cols["well"], cols["net_bo"], cols["net_diff"], cols["wc"], "REASON"]]
-        if not anomalies.empty else anomalies,
-        use_container_width=True
-    )
+    st.dataframe(anomalies, use_container_width=True)
 
-    # Visuals
     st.subheader("📈 Advanced Analytics")
     st.pyplot(fig)
     plt.close(fig)
 
-    # PPT
-    ppt = create_ppt(df, anomalies, fig, cols)
+    ppt = create_ppt(anomalies, fig, cols)
     st.download_button(
         "📥 Download PowerPoint Report",
         ppt,
@@ -268,4 +244,4 @@ if uploaded_file:
     )
 
 else:
-    st.info("👆 Upload your production Excel file to start analysis")
+    st.info("Upload your production Excel file to start analysis")
