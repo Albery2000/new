@@ -1,6 +1,6 @@
 # =========================================================
 # Oil & Gas AI Analytics Platform
-# Author: Hassan Gamal Albery
+# FULL SAFE VERSION – NO KEYERRORS
 # =========================================================
 
 import streamlit as st
@@ -22,7 +22,28 @@ st.set_page_config(
 )
 
 # =========================================================
-# ROLE BASED ACCESS (Streamlit-safe)
+# ALLOWED SHEETS (USER REQUIREMENT)
+# =========================================================
+ALLOWED_SHEETS = [
+    "Report",
+    "Remarks",
+    "Well data",
+    "Water Flooding",
+    "Pico test",
+    "Lab BS&W",
+    "Test data",
+    "Code list",
+    "Fluid shots",
+    "Tank Status",
+    "Trucks & Tanks calculation",
+    "NRA & Suez Shipping",
+    "Yesterday data",
+    "PRODUCTION DPR Report",
+    "Station situation"
+]
+
+# =========================================================
+# ROLE BASED ACCESS
 # =========================================================
 ROLES = {
     "Viewer": ["Dashboard"],
@@ -37,12 +58,22 @@ def login():
     return username, role
 
 # =========================================================
-# LOAD EXCEL (ALL SHEETS)
+# LOAD ONLY ALLOWED SHEETS
 # =========================================================
 @st.cache_data
-def load_excel(file):
+def load_allowed_sheets(file):
     xls = pd.ExcelFile(file)
-    return {s: pd.read_excel(xls, s) for s in xls.sheet_names}
+    sheets = {}
+    for sheet in xls.sheet_names:
+        if sheet in ALLOWED_SHEETS:
+            sheets[sheet] = pd.read_excel(xls, sheet_name=sheet)
+    return sheets
+
+# =========================================================
+# VALIDATE REQUIRED COLUMNS
+# =========================================================
+def validate_required_columns(df, required_cols):
+    return [c for c in required_cols if c not in df.columns]
 
 # =========================================================
 # WELL HEALTH SCORE (0–100)
@@ -67,7 +98,7 @@ def health_score(net_bo, net_diff, wc):
     return max(0, round(score))
 
 # =========================================================
-# ARIMA FORECASTING
+# ARIMA FORECAST
 # =========================================================
 def forecast_series(series):
     try:
@@ -78,7 +109,7 @@ def forecast_series(series):
         return None
 
 # =========================================================
-# ML CLUSTERING (WELL TYPES)
+# ML CLUSTERING
 # =========================================================
 def cluster_wells(df):
     features = df[['Net BO', 'Net Diff BO']].fillna(0)
@@ -87,7 +118,7 @@ def cluster_wells(df):
     return df
 
 # =========================================================
-# AUTO POWERPOINT GENERATOR
+# POWERPOINT GENERATOR
 # =========================================================
 def create_ppt(stats, df):
     prs = Presentation()
@@ -98,8 +129,7 @@ def create_ppt(stats, df):
 
     slide = prs.slides.add_slide(prs.slide_layouts[1])
     slide.shapes.title.text = "Executive Summary"
-    tf = slide.placeholders[1].text_frame
-    tf.text = (
+    slide.placeholders[1].text_frame.text = (
         f"Total Wells: {stats['wells']}\n"
         f"Average Health Score: {stats['health']}\n"
         f"Zero Production Wells: {stats['zero']}"
@@ -122,7 +152,7 @@ def main():
     user, role = login()
 
     st.title("🛢️ Oil & Gas AI Analytics Platform")
-    st.caption("Multi-sheet analytics • Forecasting • ML • Executive Reporting")
+    st.caption("Safe multi-sheet analytics • No crashes • Field-ready")
 
     uploaded_file = st.file_uploader(
         "📤 Upload Production Excel File",
@@ -130,28 +160,41 @@ def main():
     )
 
     if not uploaded_file:
-        st.info("Please upload a production Excel file to start.")
+        st.info("Please upload a production Excel file.")
         return
 
-    sheets = load_excel(uploaded_file)
+    sheets = load_allowed_sheets(uploaded_file)
 
-    st.sidebar.subheader("📄 Sheets Detected")
-    for s in sheets:
-        st.sidebar.write(f"• {s}")
+    if not sheets:
+        st.error("❌ None of the required sheets were found in this file.")
+        st.stop()
 
-    # Use first sheet as main production sheet
-    df = sheets[list(sheets.keys())[0]]
+    # -----------------------------------------------------
+    # SHEET SELECTION
+    # -----------------------------------------------------
+    st.sidebar.subheader("📄 Available Sheets")
+    selected_sheet = st.sidebar.selectbox(
+        "Select Production Sheet",
+        list(sheets.keys())
+    )
 
-    # ============================
+    df = sheets[selected_sheet]
+
+    if df.empty:
+        st.warning("⚠️ Selected sheet is empty.")
+        st.stop()
+
+    # -----------------------------------------------------
     # COLUMN MAPPING
-    # ============================
+    # -----------------------------------------------------
     with st.sidebar:
         st.subheader("🧩 Column Mapping")
-        field_col = st.selectbox("Field", df.columns)
-        well_col = st.selectbox("Well", df.columns)
-        net_bo_col = st.selectbox("Net BO", df.columns)
-        net_diff_col = st.selectbox("Net Diff BO", df.columns)
-        wc_col = st.selectbox("W/C (optional)", ["None"] + list(df.columns))
+
+        field_col = st.selectbox("Field Column", df.columns)
+        well_col = st.selectbox("Well Column", df.columns)
+        net_bo_col = st.selectbox("Net BO Column", df.columns)
+        net_diff_col = st.selectbox("Net Diff BO Column", df.columns)
+        wc_col = st.selectbox("W/C Column (optional)", ["None"] + list(df.columns))
         wc_col = None if wc_col == "None" else wc_col
 
     df = df.rename(columns={
@@ -164,66 +207,82 @@ def main():
     if wc_col:
         df = df.rename(columns={wc_col: "WC"})
 
+    # -----------------------------------------------------
+    # VALIDATION (THIS FIXES KEYERROR)
+    # -----------------------------------------------------
+    required_cols = ["Net BO", "Net Diff BO"]
+    if wc_col:
+        required_cols.append("WC")
+
+    missing_cols = validate_required_columns(df, required_cols)
+
+    if missing_cols:
+        st.error(
+            f"❌ Selected sheet is missing required columns: {', '.join(missing_cols)}"
+        )
+        st.info("💡 Please select the correct PRODUCTION sheet.")
+        st.stop()
+
+    # -----------------------------------------------------
+    # HEALTH SCORE
+    # -----------------------------------------------------
     df['Health Score'] = df.apply(
         lambda r: health_score(
-            r['Net BO'],
-            r['Net Diff BO'],
-            r['WC'] if 'WC' in df else None
+            r["Net BO"],
+            r["Net Diff BO"],
+            r["WC"] if "WC" in df.columns else None
         ),
         axis=1
     )
 
-    # ============================
+    # =====================================================
     # DASHBOARD
-    # ============================
+    # =====================================================
     if "Dashboard" in ROLES[role]:
         st.header("📊 Production Dashboard")
 
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Wells", len(df))
-        c2.metric("Average Health Score", round(df['Health Score'].mean(), 1))
-        c3.metric("Zero Production Wells", (df['Net BO'] == 0).sum())
+        c2.metric("Average Health Score", round(df["Health Score"].mean(), 1))
+        c3.metric("Zero Production Wells", (df["Net BO"] == 0).sum())
 
         st.dataframe(df.sort_values("Health Score"))
 
-        # Pareto Chart
         st.subheader("📈 Pareto Analysis (80/20)")
         d = df.sort_values("Net BO", ascending=False)
-        d['CumPct'] = d['Net BO'].cumsum() / d['Net BO'].sum()
+        d["CumPct"] = d["Net BO"].cumsum() / d["Net BO"].sum()
         fig, ax = plt.subplots()
-        ax.plot(d['CumPct'], marker='o')
-        ax.axhline(0.8, color='red', linestyle='--')
-        ax.set_ylabel("Cumulative Production %")
+        ax.plot(d["CumPct"], marker="o")
+        ax.axhline(0.8, color="red", linestyle="--")
         st.pyplot(fig)
 
-    # ============================
+    # =====================================================
     # ML & FORECAST
-    # ============================
+    # =====================================================
     if "ML & Forecast" in ROLES[role]:
-        st.header("🧠 Machine Learning & Forecasting")
+        st.header("🧠 ML & Forecasting")
 
         df = cluster_wells(df)
-        st.subheader("Well Clustering")
-        st.dataframe(df[['Well', 'Cluster', 'Health Score']])
+        st.dataframe(df[["Well", "Cluster", "Health Score"]])
 
         st.subheader("🔮 Production Forecast")
-        selected_well = st.selectbox("Select Well", df['Well'].unique())
-        series = df[df['Well'] == selected_well]['Net BO']
-
+        selected_well = st.selectbox("Select Well", df["Well"].unique())
+        series = df[df["Well"] == selected_well]["Net BO"]
         forecast = forecast_series(series)
+
         if forecast is not None:
             st.line_chart(pd.concat([series, forecast]))
 
-    # ============================
+    # =====================================================
     # ADMIN – POWERPOINT
-    # ============================
+    # =====================================================
     if "Admin" in ROLES[role]:
         st.header("📊 Auto PowerPoint Report")
 
         stats = {
             "wells": len(df),
-            "health": round(df['Health Score'].mean(), 1),
-            "zero": (df['Net BO'] == 0).sum()
+            "health": round(df["Health Score"].mean(), 1),
+            "zero": (df["Net BO"] == 0).sum()
         }
 
         ppt = create_ppt(stats, df)
