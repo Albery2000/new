@@ -1,214 +1,116 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
+import seaborn as sns
 import matplotlib.pyplot as plt
-import io
-from pptx import Presentation
-from pptx.util import Inches
 
-# =============================================================================
-# PAGE CONFIG
-# =============================================================================
-st.set_page_config(
-    page_title="Oil & Gas Analytics Dashboard",
-    page_icon="🛢️",
-    layout="wide"
+st.set_page_config(page_title="Production Analytics Dashboard", layout="wide")
+
+st.title("📊 Production Report Analytics Dashboard")
+
+# =========================
+# File Upload
+# =========================
+uploaded_file = st.file_uploader(
+    "Upload Production Excel File (.xlsx / .xlsm)",
+    type=["xlsx", "xlsm"]
 )
 
-# =============================================================================
-# HELPERS
-# =============================================================================
+if uploaded_file:
+    # Read sheet names
+    xls = pd.ExcelFile(uploaded_file)
+    sheet_name = st.selectbox("Select Sheet", xls.sheet_names)
 
-def find_column(df, level0, level1_contains=""):
-    for col in df.columns:
-        if (
-            str(col[0]).strip().upper() == level0.upper()
-            and level1_contains.upper() in str(col[1]).replace("\n", " ").upper()
-        ):
-            return col
-    return None
-
-
-def normalize_numeric(series):
-    return (
-        series.astype(str)
-        .str.replace(",", "", regex=False)
-        .replace("", np.nan)
-        .pipe(pd.to_numeric, errors="coerce")
+    skip_rows = st.number_input(
+        "Skip header rows (for reports with titles & notes)",
+        min_value=0,
+        max_value=50,
+        value=0
     )
 
-# =============================================================================
-# DATA EXTRACTION
-# =============================================================================
+    df = pd.read_excel(uploaded_file, sheet_name=sheet_name, skiprows=skip_rows)
 
-@st.cache_data(show_spinner=False)
-def extract_data(file):
-    df = pd.read_excel(
-        file,
-        sheet_name="Report",
-        skiprows=6,
-        header=[0, 1]
+    # Clean empty rows & columns
+    df = df.dropna(how="all")
+    df = df.dropna(axis=1, how="all")
+
+    st.subheader("🔍 Data Preview")
+    st.dataframe(df, use_container_width=True)
+
+    # =========================
+    # Column Selection
+    # =========================
+    numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+    categorical_cols = df.select_dtypes(exclude=np.number).columns.tolist()
+
+    st.sidebar.header("⚙️ Controls")
+
+    x_axis = st.sidebar.selectbox("X-Axis", df.columns)
+    y_axis = st.sidebar.selectbox("Y-Axis (Numeric)", numeric_cols)
+
+    chart_type = st.sidebar.selectbox(
+        "Chart Type",
+        ["Line", "Bar", "Pie"]
     )
 
-    field = find_column(df, "Field")
-    well = find_column(df, "RUNNING WELLS")
-    net_bo = find_column(df, "TOTAL PRODUCTION", "Net BO")
-    net_diff = find_column(df, "TOTAL PRODUCTION", "Net diff")
-    wc = find_column(df, "W/C", "%")
+    # =========================
+    # KPIs
+    # =========================
+    st.subheader("📌 Key Metrics")
 
-    if None in [field, well, net_bo, net_diff]:
-        return None, None
+    col1, col2, col3, col4 = st.columns(4)
 
-    df[net_bo] = normalize_numeric(df[net_bo])
-    df[net_diff] = normalize_numeric(df[net_diff])
-    if wc:
-        df[wc] = normalize_numeric(df[wc])
+    col1.metric("Total", f"{df[y_axis].sum():,.2f}")
+    col2.metric("Average", f"{df[y_axis].mean():,.2f}")
+    col3.metric("Max", f"{df[y_axis].max():,.2f}")
+    col4.metric("Min", f"{df[y_axis].min():,.2f}")
 
-    total_mask = df[field].astype(str).str.contains("TOTAL", na=False)
-    if total_mask.any():
-        df = df.loc[: total_mask.idxmax() - 1]
+    # =========================
+    # Charts
+    # =========================
+    st.subheader("📈 Visual Analytics")
 
-    df = df[
-        df[well].notna() &
-        (df[well].astype(str).str.strip() != "")
-    ]
+    if chart_type == "Line":
+        fig = px.line(df, x=x_axis, y=y_axis, markers=True)
+        st.plotly_chart(fig, use_container_width=True)
 
-    return df.reset_index(drop=True), {
-        "field": field,
-        "well": well,
-        "net_bo": net_bo,
-        "net_diff": net_diff,
-        "wc": wc
-    }
+    elif chart_type == "Bar":
+        fig = px.bar(df, x=x_axis, y=y_axis)
+        st.plotly_chart(fig, use_container_width=True)
 
-# =============================================================================
-# AI ANOMALY DETECTION (FINAL SAFE VERSION)
-# =============================================================================
+    elif chart_type == "Pie":
+        fig = px.pie(df, names=x_axis, values=y_axis)
+        st.plotly_chart(fig, use_container_width=True)
 
-def detect_anomalies(df, cols):
-    df = df.copy()
+    # =========================
+    # Correlation Heatmap
+    # =========================
+    if len(numeric_cols) > 1:
+        st.subheader("🔗 Correlation Heatmap")
 
-    # Z-score
-    std = df[cols["net_diff"]].std()
-    if std == 0 or pd.isna(std):
-        df["z_net_diff"] = 0
+        corr = df[numeric_cols].corr()
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.heatmap(corr, annot=True, cmap="coolwarm", ax=ax)
+        st.pyplot(fig)
+
+    # =========================
+    # Insights Section
+    # =========================
+    st.subheader("🧠 Automated Insights")
+
+    top_row = df.loc[df[y_axis].idxmax()]
+    bottom_row = df.loc[df[y_axis].idxmin()]
+
+    st.success(
+        f"🔼 Highest **{y_axis}**: {top_row[x_axis]} → {top_row[y_axis]:,.2f}"
+    )
+    st.error(
+        f"🔽 Lowest **{y_axis}**: {bottom_row[x_axis]} → {bottom_row[y_axis]:,.2f}"
+    )
+
+    if df[y_axis].iloc[-1] > df[y_axis].iloc[0]:
+        st.info("📈 Overall trend shows an **increase**.")
     else:
-        df["z_net_diff"] = (
-            (df[cols["net_diff"]] - df[cols["net_diff"]].mean()) / std
-        )
-
-    # IQR
-    q1 = df[cols["net_bo"]].quantile(0.25)
-    q3 = df[cols["net_bo"]].quantile(0.75)
-    iqr = q3 - q1
-
-    lower_bo = q1 - 1.5 * iqr
-    upper_bo = q3 + 1.5 * iqr
-
-    flag_extreme_diff = df["z_net_diff"].abs() > 3
-    flag_zero_bo = df[cols["net_bo"]] == 0
-    flag_iqr_bo = (df[cols["net_bo"]] < lower_bo) | (df[cols["net_bo"]] > upper_bo)
-    flag_high_wc = (df[cols["wc"]] > 75) if cols["wc"] else pd.Series(False, index=df.index)
-
-    df["ANOMALY"] = (
-        flag_extreme_diff |
-        flag_zero_bo |
-        flag_iqr_bo |
-        flag_high_wc
-    )
-
-    df["REASON"] = ""
-
-    df.loc[flag_extreme_diff, "REASON"] = (
-        df.loc[flag_extreme_diff, "REASON"] +
-        "Extreme Net Diff BO (Z-score > 3); "
-    )
-
-    df.loc[flag_zero_bo, "REASON"] = (
-        df.loc[flag_zero_bo, "REASON"] +
-        "Zero Net BO; "
-    )
-
-    df.loc[flag_iqr_bo, "REASON"] = (
-        df.loc[flag_iqr_bo, "REASON"] +
-        "Abnormal Net BO (IQR outlier); "
-    )
-
-    if cols["wc"]:
-        df.loc[flag_high_wc, "REASON"] = (
-            df.loc[flag_high_wc, "REASON"] +
-            "High Water Cut (>75%); "
-        )
-
-    return df[df["ANOMALY"]].reset_index(drop=True)
-
-# =============================================================================
-# VISUALS
-# =============================================================================
-
-def create_visuals(df, cols):
-    fig, axes = plt.subplots(1, 3, figsize=(32, 10))
-    fig.set_dpi(300)
-
-    diff_df = (
-        df.assign(abs_diff=df[cols["net_diff"]].abs())
-        .sort_values("abs_diff", ascending=False)
-        .head(15)
-    )
-
-    colors = [
-        "orange" if bo == 0 else ("green" if v > 0 else "red")
-        for v, bo in zip(diff_df[cols["net_diff"]], diff_df[cols["net_bo"]])
-    ]
-
-    axes[0].bar(diff_df[cols["well"]], diff_df[cols["net_diff"]], color=colors)
-    axes[0].axhline(0, color="black")
-    axes[0].set_title("Top 15 Net Diff BO Wells")
-    axes[0].tick_params(axis="x", rotation=45)
-
-    if cols["wc"]:
-        wc_df = df[df[cols["net_bo"]] > 0].nlargest(10, cols["wc"])
-        axes[1].barh(wc_df[cols["well"]], wc_df[cols["wc"]])
-        axes[1].set_title("Top 10 Wells by W/C")
-
-    bo_df = df.nlargest(10, cols["net_bo"])
-    axes[2].barh(bo_df[cols["well"]], bo_df[cols["net_bo"]])
-    axes[2].set_title("Top 10 Net BO Wells")
-
-    plt.tight_layout()
-    return fig
-
-# =============================================================================
-# UI
-# =============================================================================
-
-st.title("🛢️ Oil & Gas Analytics Dashboard")
-
-file = st.file_uploader("Upload Production Excel File", type=["xlsx", "xlsm"])
-
-if file:
-    df, cols = extract_data(file)
-
-    if df is None:
-        st.error("Required columns not found.")
-        st.stop()
-
-    anomalies = detect_anomalies(df, cols)
-    fig = create_visuals(df, cols)
-
-    st.subheader("📊 KPIs")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Wells", len(df))
-    c2.metric("Anomalies", len(anomalies))
-    c3.metric("Zero Net BO", int((df[cols["net_bo"]] == 0).sum()))
-    c4.metric("High W/C", int((df[cols["wc"]] > 75).sum()) if cols["wc"] else 0)
-
-    st.subheader("🚨 AI-Detected Anomalies")
-    st.dataframe(anomalies, use_container_width=True)
-
-    st.subheader("📈 Advanced Analytics")
-    st.pyplot(fig)
-    plt.close(fig)
-
-else:
-    st.info("Upload your production Excel file to start analysis")
+        st.warning("📉 Overall trend shows a **decrease**.")
